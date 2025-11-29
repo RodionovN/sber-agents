@@ -28,6 +28,12 @@ dp = Dispatcher()
 # Системный промпт для роли финансового советника
 SYSTEM_PROMPT = """Ты финансовый советник. Твоя задача - помогать пользователям с финансовыми вопросами, давать советы по управлению финансами, инвестициям, планированию бюджета и другим финансовым темам. Отвечай профессионально, понятно и дружелюбно."""
 
+# Хранение истории диалога в памяти (user_id -> список сообщений)
+user_history = {}
+
+# Максимальное количество сообщений в истории
+MAX_HISTORY_MESSAGES = 10
+
 # Настройка клиента OpenAI для OpenRouter
 openai_client = AsyncOpenAI(
     base_url="https://openrouter.ai/api/v1",
@@ -38,17 +44,37 @@ openai_client = AsyncOpenAI(
     },
 )
 
-async def get_llm_response(user_message: str) -> str:
-    """Отправляет запрос к LLM через OpenRouter и возвращает ответ"""
+async def get_llm_response(user_id: int, user_message: str) -> str:
+    """Отправляет запрос к LLM через OpenRouter с учетом истории диалога"""
     try:
+        # Получаем историю пользователя или создаем новую
+        history = user_history.get(user_id, [])
+        
+        # Формируем список сообщений: системный промпт + история + текущее сообщение
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT}
+        ]
+        messages.extend(history)
+        messages.append({"role": "user", "content": user_message})
+        
         response = await openai_client.chat.completions.create(
             model="tngtech/deepseek-r1t2-chimera:free",
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_message}
-            ],
+            messages=messages,
         )
-        return response.choices[0].message.content
+        
+        response_text = response.choices[0].message.content
+        
+        # Сохраняем вопрос и ответ в историю
+        history.append({"role": "user", "content": user_message})
+        history.append({"role": "assistant", "content": response_text})
+        
+        # Ограничиваем размер истории
+        if len(history) > MAX_HISTORY_MESSAGES:
+            history = history[-MAX_HISTORY_MESSAGES:]
+        
+        user_history[user_id] = history
+        
+        return response_text
     except Exception as e:
         logger.error(f"Ошибка при запросе к LLM: {e}", exc_info=True)
         error_str = str(e)
@@ -65,6 +91,8 @@ async def get_llm_response(user_message: str) -> str:
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
+    # Очищаем историю при команде /start
+    user_history[message.from_user.id] = []
     await message.answer("Привет! Я финансовый советник. Задай мне вопрос о финансах, инвестициях, планировании бюджета или других финансовых темах, и я помогу тебе.")
 
 @dp.message()
@@ -73,9 +101,13 @@ async def message_handler(message: Message):
         await message.answer("Пожалуйста, отправьте текстовое сообщение.")
         return
     
-    await message.answer("Обрабатываю запрос...")
-    response = await get_llm_response(message.text)
-    await message.answer(response)
+    # Отправляем сообщение "Обрабатываю запрос..." и сохраняем его для редактирования
+    status_message = await message.answer("Обрабатываю запрос...")
+    
+    response = await get_llm_response(message.from_user.id, message.text)
+    
+    # Редактируем сообщение на ответ от LLM
+    await status_message.edit_text(response)
 
 async def main():
     logger.info("Бот запущен")
