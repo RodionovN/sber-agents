@@ -1,5 +1,7 @@
 import os
 import logging
+import asyncio
+from asyncio import TimeoutError
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
@@ -34,6 +36,9 @@ user_history = {}
 # Максимальное количество сообщений в истории
 MAX_HISTORY_MESSAGES = 10
 
+# Таймаут для запросов к LLM (в секундах)
+LLM_TIMEOUT = 60
+
 # Настройка клиента OpenAI для OpenRouter
 openai_client = AsyncOpenAI(
     base_url="https://openrouter.ai/api/v1",
@@ -57,9 +62,13 @@ async def get_llm_response(user_id: int, user_message: str) -> str:
         messages.extend(history)
         messages.append({"role": "user", "content": user_message})
         
-        response = await openai_client.chat.completions.create(
-            model="tngtech/deepseek-r1t2-chimera:free",
-            messages=messages,
+        # Запрос с таймаутом
+        response = await asyncio.wait_for(
+            openai_client.chat.completions.create(
+                model="tngtech/deepseek-r1t2-chimera:free",
+                messages=messages,
+            ),
+            timeout=LLM_TIMEOUT
         )
         
         response_text = response.choices[0].message.content
@@ -75,8 +84,11 @@ async def get_llm_response(user_id: int, user_message: str) -> str:
         user_history[user_id] = history
         
         return response_text
+    except TimeoutError:
+        logger.error(f"Таймаут при запросе к LLM для пользователя {user_id}")
+        return "Извините, запрос занял слишком много времени. Попробуйте позже."
     except Exception as e:
-        logger.error(f"Ошибка при запросе к LLM: {e}", exc_info=True)
+        logger.error(f"Ошибка при запросе к LLM для пользователя {user_id}: {e}", exc_info=True)
         error_str = str(e)
         
         # Обработка специфичных ошибок
@@ -87,7 +99,7 @@ async def get_llm_response(user_id: int, user_message: str) -> str:
         elif "429" in error_str or "rate limit" in error_str.lower():
             return "Превышен лимит запросов. Попробуйте позже."
         else:
-            return f"Извините, произошла ошибка при обработке запроса. Попробуйте позже."
+            return "Извините, произошла ошибка при обработке запроса. Попробуйте позже."
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
@@ -101,13 +113,25 @@ async def message_handler(message: Message):
         await message.answer("Пожалуйста, отправьте текстовое сообщение.")
         return
     
-    # Отправляем сообщение "Обрабатываю запрос..." и сохраняем его для редактирования
-    status_message = await message.answer("Обрабатываю запрос...")
-    
-    response = await get_llm_response(message.from_user.id, message.text)
-    
-    # Редактируем сообщение на ответ от LLM
-    await status_message.edit_text(response)
+    try:
+        # Отправляем сообщение "Обрабатываю запрос..." и сохраняем его для редактирования
+        status_message = await message.answer("Обрабатываю запрос...")
+        
+        response = await get_llm_response(message.from_user.id, message.text)
+        
+        # Редактируем сообщение на ответ от LLM
+        try:
+            await status_message.edit_text(response)
+        except Exception as edit_error:
+            logger.warning(f"Не удалось отредактировать сообщение для пользователя {message.from_user.id}: {edit_error}")
+            # Если редактирование не удалось, отправляем новое сообщение
+            await message.answer(response)
+    except Exception as e:
+        logger.error(f"Ошибка при обработке сообщения от пользователя {message.from_user.id}: {e}", exc_info=True)
+        try:
+            await message.answer("Извините, произошла ошибка при обработке вашего сообщения. Попробуйте позже.")
+        except Exception as send_error:
+            logger.error(f"Не удалось отправить сообщение об ошибке пользователю {message.from_user.id}: {send_error}")
 
 async def main():
     logger.info("Бот запущен")
