@@ -25,6 +25,9 @@ if not OPENROUTER_API_KEY:
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
 
+# Системный промпт для роли финансового советника
+SYSTEM_PROMPT = """Ты финансовый советник. Твоя задача - помогать пользователям с финансовыми вопросами, давать советы по управлению финансами, инвестициям, планированию бюджета и другим финансовым темам. Отвечай профессионально, понятно и дружелюбно."""
+
 # Настройка клиента OpenAI для OpenRouter
 openai_client = AsyncOpenAI(
     base_url="https://openrouter.ai/api/v1",
@@ -41,6 +44,7 @@ async def get_llm_response(user_message: str) -> str:
         response = await openai_client.chat.completions.create(
             model="tngtech/deepseek-r1t2-chimera:free",
             messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_message}
             ],
         )
@@ -61,7 +65,7 @@ async def get_llm_response(user_message: str) -> str:
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
-    await message.answer("Привет! Я бот-ассистент. Отправь мне сообщение, и я отвечу через LLM.")
+    await message.answer("Привет! Я финансовый советник. Задай мне вопрос о финансах, инвестициях, планировании бюджета или других финансовых темах, и я помогу тебе.")
 
 @dp.message()
 async def message_handler(message: Message):
